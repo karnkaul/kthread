@@ -46,16 +46,13 @@ class kthread {
 
 // impl
 
-inline void kthread::yield() {
-	std::this_thread::yield();
-}
+inline void kthread::yield() { std::this_thread::yield(); }
 template <typename Dur>
 void kthread::sleep_for(Dur&& duration) {
 	std::this_thread::sleep_for(duration);
 }
 template <typename F, typename... Args, typename>
-inline kthread::kthread(F&& func, Args&&... args) : m_thread(std::forward<F>(func), std::forward<Args>(args)...) {
-}
+inline kthread::kthread(F&& func, Args&&... args) : m_thread(std::forward<F>(func), std::forward<Args>(args)...) {}
 inline kthread& kthread::operator=(kthread&& rhs) noexcept {
 	if (&rhs != this) {
 		join();
@@ -63,13 +60,9 @@ inline kthread& kthread::operator=(kthread&& rhs) noexcept {
 	}
 	return *this;
 }
-inline kthread::~kthread() {
-	join();
-}
+inline kthread::~kthread() { join(); }
 inline void kthread::swap(kthread& rhs) noexcept {
-	if (&rhs != this) {
-		std::swap(m_thread, rhs.m_thread);
-	}
+	if (&rhs != this) { std::swap(m_thread, rhs.m_thread); }
 }
 inline bool kthread::join() {
 	if (m_thread.joinable()) {
