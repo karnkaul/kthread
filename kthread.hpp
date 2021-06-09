@@ -2,6 +2,8 @@
 // Requirements: C++17
 
 #pragma once
+#include <atomic>
+#include <memory>
 #include <thread>
 #include <type_traits>
 
@@ -10,14 +12,18 @@ namespace kt {
 /// \brief std::thread wrapper that joins on destruction / move
 ///
 class kthread {
-	template <typename T>
-	static constexpr bool guard = !std::is_convertible_v<std::decay_t<T>, kthread> && !std::is_same_v<std::decay_t<T>, std::thread>;
-
   public:
+	enum class policy { wait, stop };
+
+	class stop_t;
+
+	template <typename F, typename... Args>
+	using invocable_t = std::enable_if_t<std::is_invocable_v<F, Args...> || std::is_invocable_v<F, stop_t, Args...>>;
+
 	///
 	/// \brief Yield execution of the calling thread
 	///
-	static void yield();
+	static void yield() { std::this_thread::yield(); }
 	///
 	/// \brief Sleep calling thread for a specific duration (approximate)
 	///
@@ -25,7 +31,10 @@ class kthread {
 	static void sleep_for(Dur&& duration);
 
 	kthread() = default;
-	template <typename F, typename... Args, typename = std::enable_if_t<guard<F>>>
+	///
+	/// \brief Invoke F(Args...) or F(stop_t, Args...) on a new thread
+	///
+	template <typename F, typename... Args, typename = invocable_t<F, Args...>>
 	explicit kthread(F&& func, Args&&... args);
 	kthread(kthread&&) = default;
 	kthread& operator=(kthread&&) noexcept;
@@ -39,35 +48,76 @@ class kthread {
 	/// \brief Swap this instance with rhs
 	///
 	void swap(kthread& rhs) noexcept;
+	///
+	/// \brief Signal stop token (if existent)
+	///
+	bool request_stop() noexcept;
+	///
+	/// \brief Check if an execution context is running
+	///
+	bool active() const noexcept { return m_thread.joinable(); }
+	///
+	/// \brief Whether to send stop signal before joining
+	///
+	policy m_join = policy::wait;
 
   private:
 	std::thread m_thread;
+	std::unique_ptr<std::atomic_bool> m_stop;
+};
+
+///
+/// \brief Stop Token
+///
+class kthread::stop_t {
+  public:
+	bool stop_requested() const noexcept { return m_stop && m_stop->load(); }
+
+  private:
+	explicit stop_t(std::atomic_bool* stop) noexcept : m_stop(stop) {}
+	std::atomic_bool* m_stop;
+	friend class kthread;
 };
 
 // impl
 
-inline void kthread::yield() { std::this_thread::yield(); }
 template <typename Dur>
 void kthread::sleep_for(Dur&& duration) {
 	std::this_thread::sleep_for(duration);
 }
 template <typename F, typename... Args, typename>
-inline kthread::kthread(F&& func, Args&&... args) : m_thread(std::forward<F>(func), std::forward<Args>(args)...) {}
+inline kthread::kthread(F&& func, Args&&... args) {
+	if constexpr (std::is_invocable_v<F, stop_t, Args...>) {
+		m_stop = std::make_unique<std::atomic_bool>(false);
+		m_thread = std::thread(std::forward<F>(func), stop_t(m_stop.get()), std::forward<Args>(args)...);
+	} else {
+		m_thread = std::thread(std::forward<F>(func), std::forward<Args>(args)...);
+	}
+}
 inline kthread& kthread::operator=(kthread&& rhs) noexcept {
 	if (&rhs != this) {
 		join();
-		m_thread = std::move(rhs.m_thread);
+		swap(rhs);
 	}
 	return *this;
 }
 inline kthread::~kthread() { join(); }
 inline void kthread::swap(kthread& rhs) noexcept {
-	if (&rhs != this) { std::swap(m_thread, rhs.m_thread); }
+	std::swap(m_thread, rhs.m_thread);
+	std::swap(m_stop, rhs.m_stop);
+}
+inline bool kthread::request_stop() noexcept {
+	if (m_stop) {
+		bool b = false;
+		return m_stop->compare_exchange_strong(b, true);
+	}
+	return false;
 }
 inline bool kthread::join() {
 	if (m_thread.joinable()) {
+		if (m_join == policy::stop) { request_stop(); }
 		m_thread.join();
-		m_thread = {};
+		m_stop.reset();
 		return true;
 	}
 	return false;
